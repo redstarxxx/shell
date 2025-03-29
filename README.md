@@ -1,6 +1,6 @@
 2025 XRAY 脚本REDX:
 
-curl -o redx2025.sh https://raw.githubusercontent.com/redstarxxx/shell/2025/redx2025.sh && chmod +x redx2025.sh && ./redx2025.sh
+curl -o redx2025.sh https://gh.xx80.eu.org/redstarxxx/shell/2025/redx2025.sh && chmod +x redx2025.sh && ./redx2025.sh
 
 FRP:
 
@@ -12,7 +12,7 @@ mkdir -p /root/.tse/ && curl -o /root/.tse/tse.sh https://raw.githubusercontent.
 
 OC:
 
-curl -o oc2025.sh https://raw.githubusercontent.com/redstarxxx/shell/2025/oc2025.sh && chmod +x oc2025.sh && bash oc2025.sh @ 
+curl -o oc2025.sh https://gh.xx80.eu.org/redstarxxx/shell/2025/oc2025.sh && chmod +x oc2025.sh && bash oc2025.sh @ 
 
 VPSKeeper:
 
