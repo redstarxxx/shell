@@ -3,32 +3,66 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
 
 #=======================================================
-#	System Required: CentOS/Debian/Ubuntu/OpenWRT
+#	System Required: CentOS/Debian/Ubuntu/OpenWRT/Alpine/RHEL
 #	Description: VPS keeper for telgram
 #	Version: $sh_ver
 #	Author: tse
 #	Blog: https://vtse.eu.org
 #=======================================================
 
-# 颜色代码
-GR="\033[32m" && RE="\033[31m" && GRB="\033[42;37m" && REB="\033[41;37m" && NC="\033[0m"
+# 检查基本命令是否存在
+for cmd in basename awk sed grep cut tr; do
+    if ! command -v $cmd >/dev/null 2>&1; then
+        echo "Error: $cmd is not installed"
+        exit 1
+    fi
+done
+
+# 颜色代码 (增加对tput的支持)
+if command -v tput >/dev/null 2>&1; then
+    GR="$(tput setaf 2)"
+    RE="$(tput setaf 1)"
+    GRB="$(tput setab 2)$(tput setaf 7)"
+    REB="$(tput setab 1)$(tput setaf 7)"
+    NC="$(tput sgr0)"
+else
+    GR="\033[32m"
+    RE="\033[31m"
+    GRB="\033[42;37m"
+    REB="\033[41;37m"
+    NC="\033[0m"
+fi
+
 Inf="${GR}[信息]${NC}:"
 Err="${RE}[错误]${NC}:"
 Tip="${GR}[提示]${NC}:"
 SETTAG="${GR}-> 已设置${NC}"
 UNSETTAG="${RE}-> 未设置${NC}"
 
-# 检测是否root用户
-if [ "$(id -u)" -ne 0 ]; then
-    echo "非 \"root权限\" 用户, 请使用 \"root\" 用户或 \"sudo\" 指令执行."
-    usreid="${REB}非ROOT权限${NC}"
-    exit 1
-else
+# 改进的root权限检测方式
+check_root() {
+    local user_id
+    if command -v id >/dev/null 2>&1; then
+        user_id="$(id -u)"
+    else
+        user_id="$(whoami)"
+    fi
+
+    if [ "$user_id" != "0" ]; then
+        echo "非 \"root权限\" 用户, 请使用 \"root\" 用户或 \"sudo\" 指令执行."
+        usreid="${REB}非ROOT权限${NC}"
+        return 1
+    fi
     usreid="${GRB}ROOT权限${NC}"
+    return 0
+}
+
+if ! check_root; then
+    exit 1
 fi
 
 # 基本参数
-sh_ver="1.240609.1"
+sh_ver="1.240609.2"
 FolderPath="/root/.shfile"
 ConfigFile="/root/.shfile/TelgramBot.ini"
 BOTToken_de="6718888288:AAG5aVWV4FCmS0ItoPy1-3KkhdNg8eym5AM"
@@ -40,6 +74,22 @@ FlowThreshold_de="3GB"
 FlowThresholdMAX_de="500GB"
 ReportTime_de="00:00"
 AutoUpdateTime_de="01:01"
+
+# 检查系统必需命令
+required_commands=(curl wget ip sed awk grep)
+missing_commands=()
+
+for cmd in "${required_commands[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        missing_commands+=("$cmd")
+    fi
+done
+
+if [ ${#missing_commands[@]} -ne 0 ]; then
+    echo "${Err} 以下必需命令未安装: ${missing_commands[*]}"
+    echo "${Tip} 请安装缺失的命令后再运行脚本"
+    exit 1
+fi
 
 un_tag=false
 
@@ -1477,7 +1527,7 @@ EOF
         boot_pid=$(getpid "send_tg.sh")
     fi
     tips="$Tip 开机 通知已经设置成功, 当开机时发出通知."
-    
+
 }
 
 # 设置登陆通知
@@ -6084,7 +6134,7 @@ fi
 
 CLS
 echo && echo -e "${GR}VPS-TG${NC} 守护一键管理脚本 ${RE}[v${sh_ver}]${NC}
--- tse | vtse.eu.org | $release -- 
+-- tse | vtse.eu.org | $release --
                         ${flowthm_menu_tag}             ${sd_rt_menu_tag} ${proxy_menu_tag} ${senduptime_menu_tag} ${sendip_menu_tag} ${sendprice_menu_tag}
  ${GR}0.${NC} 检查依赖 / 设置参数 \t$reset_menu_tag
 ————————————————————————
