@@ -1788,10 +1788,10 @@ case $choice in
                 echo -e "${GR}ACME - 申请证书${NC}"
                 echo -e "${colored_text2}${NC}"
                 echo -e "1.  方法一: 采用端口 80 验证方式申请"
-                echo -e "2.  方法二: 采用 Nginx 验证方式申请 (需要安装Nginx)"
-                echo -e "3.  方法二: 采用 Nginx 验证方式申请 (需要安装Nginx)"
-                echo -e "4.  方法三: 采用 http 绝对路径方式验证申请"
-                echo -e "5.  方法四: 采用 cloudflare 的 API 验证方式申请"
+                echo -e "2.  方法二: 采用 Nginx 验证方式申请"
+                echo -e "3.  方法三: 采用 Nginx 验证方式申请 (采用临时文件验证)"
+                echo -e "4.  方法四: 采用 http 绝对路径方式验证申请"
+                echo -e "5.  方法五: 采用 cloudflare 的 API 验证方式申请"
                 echo -e "${colored_text1}${NC}"
                 echo -e "c.  切换申请服务器"
                 echo -e "${colored_text1}${NC}"
@@ -1990,6 +1990,8 @@ case $choice in
                                         echo "证书已生成并保存到 $user_path/cert 目录下."
                                         # 删除临时文件
                                         rm -f "$temp_file"
+                                        chmod 644 "$user_path/cert/$domain.key"
+                                        chmod 644 "$user_path/cert/$domain.cer"
                                         break
                                     else
                                         rm $user_path/cert/$domain.key &>/dev/null
