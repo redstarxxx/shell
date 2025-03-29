@@ -1354,7 +1354,7 @@ case $choice in
                         "$jsonfile" > temp.json && mv temp.json "$jsonfile"
                     fi
 
-                    # cat $jsonfile 
+                    # cat $jsonfile
                     # waitfor ########## 方便调试时使用
 
                     rd_port=$(jq -r '.inbounds[-1].port' "$jsonfile")
@@ -1424,7 +1424,7 @@ case $choice in
                     ############################################
 
                     # cat $jsonfile | jq '.inbounds as $in | .outbounds | select(. != null) as $out | $in, $out' ########## 方便调试时关闭
-                    # cat $jsonfile 
+                    # cat $jsonfile
                     # clear_screen ########## 方便调试时关闭
 
                     echo -e "${GR}▼▼${NC}"
@@ -1789,8 +1789,9 @@ case $choice in
                 echo -e "${colored_text2}${NC}"
                 echo -e "1.  方法一: 采用端口 80 验证方式申请"
                 echo -e "2.  方法二: 采用 Nginx 验证方式申请 (需要安装Nginx)"
-                echo -e "3.  方法三: 采用 http 绝对路径方式验证申请"
-                echo -e "4.  方法四: 采用 cloudflare 的 API 验证方式申请"
+                echo -e "3.  方法二: 采用 Nginx 验证方式申请 (需要安装Nginx)"
+                echo -e "4.  方法三: 采用 http 绝对路径方式验证申请"
+                echo -e "5.  方法四: 采用 cloudflare 的 API 验证方式申请"
                 echo -e "${colored_text1}${NC}"
                 echo -e "c.  切换申请服务器"
                 echo -e "${colored_text1}${NC}"
@@ -1888,6 +1889,129 @@ case $choice in
                         waitfor
                         ;;
                     2|22)
+                        while true; do
+                            read -e -p "请输入申请证书的域名: " domain
+                            if [[ $domain == *.* ]]; then
+                                ipaddress=$(ping -c 1 "$domain" 2> /dev/null | awk '/^PING/{print $3}' | awk -F'[()]' '{print $2}')
+                                if [ -z "$ipaddress" ]; then
+                                    echo -e "未检测到 ${GR}$domain${NC} 指定的 IP 地址!"
+                                    echo -en "请选择: ${GR}4${NC}.继续以IPv4申请  ${GR}6${NC}.继续以IPv6申请  ${GR}回车${NC}.中止 : "
+                                    read -er input_address
+                                    if [ -z "$input_address" ]; then echo; fi
+                                    if [ "$input_address" == "4" ]; then
+                                        IPType="4"
+                                        echo -e "IPType: IPv${GR}$IPType${NC}"
+                                    elif [ "$input_address" == "6" ]; then
+                                        IPType="6"
+                                        echo -e "IPType: IPv${GR}$IPType${NC}"
+                                    else
+                                        break
+                                    fi
+                                else
+                                    echo "检测到 $domain 指定的 IP 地址: $ipaddress"
+                                    if [[ $ipaddress =~ $ipv4_regex ]]; then
+                                        IPType="4"
+                                        echo -e "IPType: IPv${GR}$IPType${NC}"
+                                    elif [[ $ipaddress =~ $ipv6_regex ]]; then
+                                        IPType="6"
+                                        echo -e "IPType: IPv${GR}$IPType${NC}"
+                                    else
+                                        echo -e "IP 地址: $ipaddress  检测到 IP 类型有误!"
+                                        echo -en "请选择: ${GR}4${NC}.继续以IPv4申请  ${GR}6${NC}.继续以IPv6申请  ${GR}回车${NC}.中止 : "
+                                        read -er input_address
+                                        if [ -z "$input_address" ]; then echo; fi
+                                        if [ "$input_address" == "4" ]; then
+                                            IPType="4"
+                                        elif [ "$input_address" == "6" ]; then
+                                            IPType="6"
+                                        else
+                                            break
+                                        fi
+                                    fi
+                                fi
+                                # 安装 Nginx 并使用其验证域名所有权
+                                if ! command -v nginx &>/dev/null; then
+                                    read -e -p "系统未检测到Nginx, 是否进行Nginx安装 (Y/其它跳过): " choice
+                                    if [[ ! $choice == "Y" && ! $choice == "y" ]]; then
+                                        break
+                                    fi
+                                    $pm -y install nginx
+                                fi
+                                WEBROOT=$(nginx -T | grep "root" | grep -v "#" | awk '{print $2}' | tr -d ";")
+                                if [ -z "$WEBROOT" ]; then
+                                    WEBROOT=$(nginx -T | grep "root " | grep -v "#" | sed -E 's/.*root ([^;]+);/\1/')
+                                    if [ -z "$WEBROOT" ]; then
+                                        echo "未能检测到 Nginx 的根目录，请手动设置或检查 Nginx 配置。"
+                                        break
+                                    fi
+                                fi
+                                # 确保 Nginx 正在运行
+                                systemctl restart nginx > /dev/null 2>&1
+                                if [ $? -ne 0 ]; then
+                                    echo "Nginx 启动失败，请检查 Nginx 配置。"
+                                    break
+                                fi
+                                # 创建一个临时文件用于 ACME 验证
+                                temp_file="$WEBROOT/.well-known/acme-challenge/test-${random}"
+                                mkdir -p "$WEBROOT/.well-known/acme-challenge/"
+                                if [ ! -d "$WEBROOT/.well-known/acme-challenge/" ]; then
+                                    echo "创建 ACME 验证目录失败，请检查 Nginx 根目录权限。"
+                                    break
+                                fi
+                                # 写入测试文件
+                                echo "test-${random}" > "$temp_file"
+                                # 确保文件可通过 HTTP 访问
+                                if [ ! -f "$temp_file" ]; then
+                                    echo "创建测试文件失败，请检查 Nginx 配置和权限。"
+                                    break
+                                fi
+                                # 验证文件是否可通过 HTTP 访问
+                                response=$(curl -s -o /dev/null -w "%{http_code}" "http://$domain/.well-known/acme-challenge/test-${random}")
+                                if [ "$response" -ne 200 ]; then
+                                    echo "无法通过 HTTP 访问测试文件，请确保 Nginx 配置正确并且域名解析正确。"
+                                    break
+                                fi
+                                # 如果一切顺利，开始申请证书
+                                $user_path/.acme.sh/acme.sh --issue -d $domain -w "$WEBROOT"
+                                if [ $? -ne 0 ]; then
+                                    echo "证书申请失败，请检查域名解析和 Nginx 配置。"
+                                    break
+                                fi
+                                # 安装证书
+                                $user_path/.acme.sh/acme.sh --installcert -d $domain --key-file $user_path/cert/$domain.key --fullchain-file $user_path/cert/$domain.cer
+                                if [ $? -ne 0 ]; then
+                                    echo "证书安装失败，请检查证书文件和 Nginx 配置。"
+                                    break
+                                fi
+                                # 验证证书是否安装成功
+                                if [[ -f "$user_path/cert/$domain.key" && -f "$user_path/cert/$domain.cer" ]]; then
+                                    if [[ -s "$user_path/cert/$domain.key" && -s "$user_path/cert/$domain.cer" ]]; then
+                                        echo "证书申请成功！"
+                                        echo "证书已生成并保存到 $user_path/cert 目录下."
+                                        # 删除临时文件
+                                        rm -f "$temp_file"
+                                        break
+                                    else
+                                        rm $user_path/cert/$domain.key &>/dev/null
+                                        rm $user_path/cert/$domain.cer &>/dev/null
+                                        rm -rf $user_path/.acme.sh/${domain}_ecc &>/dev/null
+                                        echo "申请失败：存在文件但文件大小为0，已删除空文件。"
+                                        break
+                                    fi
+                                else
+                                    echo "申请失败：缺少证书文件。"
+                                    break
+                                fi
+                            else
+                                if [[ $domain == "" ]]; then
+                                    break
+                                fi
+                                echo "输入的域名不合法, 请重新输入."
+                            fi
+                        done
+                        waitfor
+                        ;;
+                    3|33)
                         while true; do
                             read -e -p "请输入申请证书的域名: " domain
                             if [[ $domain == *.* ]]; then
@@ -2054,7 +2178,7 @@ case $choice in
                         systemctl restart nginx > /dev/null 2>&1
                         waitfor
                         ;;
-                    3|33)
+                    4|44)
                         noloop=0
                         while true; do
                             echo -e "请输入申请证书的域名, 主体名和可选主体名, 以空格格开, (如: do1.com do2.com)"
@@ -2131,7 +2255,7 @@ case $choice in
                         fi
                         waitfor
                         ;;
-                    4|44)
+                    5|55)
                         while true; do
                             echo -e "请输入申请证书的域名, 输入子域名, 自动添加泛域名"
                             read -e -p "请输入域名: " domain
@@ -2907,7 +3031,7 @@ case $choice in
                                     wg-quick down $selected_conf_files
                                     rm -f /etc/wireguard/$selected_conf_files.conf
                                     echo -e "$selected_conf_files 服务已经${MA}删除${NC}."
-                                else 
+                                else
                                     echo "取消删除."
                                 fi
                             else
