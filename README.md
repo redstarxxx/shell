@@ -12,7 +12,7 @@ mkdir -p /root/.tse/ && curl -o /root/.tse/tse.sh https://raw.githubusercontent.
 
 OC:
 
-curl -o oc.sh https://raw.githubusercontent.com/redstarxxx/shell/main/oc.sh && chmod +x oc.sh && bash oc.sh @ 
+curl -o oc2025.sh https://raw.githubusercontent.com/redstarxxx/shell/main/oc2025.sh && chmod +x oc2025.sh && bash oc2025.sh @ 
 
 VPSKeeper:
 
