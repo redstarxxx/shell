@@ -1,6 +1,6 @@
 2025 XRAY 脚本REDX:
 
-curl -o redx.sh https://raw.githubusercontent.com/redstarxxx/shell/main/redx.sh && chmod +x redx.sh && ./redx.sh
+curl -o redx2025.sh https://raw.githubusercontent.com/redstarxxx/shell/main/redx2025.sh && chmod +x redx2025.sh && ./redx2025.sh
 
 FRP:
 
