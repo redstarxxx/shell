@@ -18,4 +18,5 @@ VPSKeeper:
 
 bash -c "$(curl -L https://raw.githubusercontent.com/redstarxxx/shell/main/VPSKeeper.sh)" (参数过多，已经不支持)
 
-curl -o VPSKeeper.sh https://raw.githubusercontent.com/redstarxxx/shell/main/VPSKeeper.sh && chmod +x VPSKeeper.sh && bash VPSKeeper.sh @ 
+curl -o VPSKeeper2025.sh https://raw.githubusercontent.com/redstarxxx/shell/main/VPSKeeper.sh && chmod +x VPSKeeper2025.sh && bash VPSKeeper2025.sh @ 
+curl -o VPSKeeper2025.sh https://xx80.eu.org/proxy/https://raw.githubusercontent.com/redstarxxx/shell/main/VPSKeeper.sh && chmod +x VPSKeeper2025.sh && bash VPSKeeper2025.sh @ 
