@@ -20,4 +20,4 @@ bash -c "$(curl -L https://raw.githubusercontent.com/redstarxxx/shell/main/VPSKe
 
 curl -o VPSKeeper2025.sh https://raw.githubusercontent.com/redstarxxx/shell/main/VPSKeeper.sh && chmod +x VPSKeeper2025.sh && bash VPSKeeper2025.sh @
 
-curl -o VPSKeeper2025.sh https://xx80.eu.org/proxy/https://raw.githubusercontent.com/redstarxxx/shell/main/VPSKeeper.sh && chmod +x VPSKeeper2025.sh && bash VPSKeeper2025.sh @
+curl -o VPSKeeper2025.sh https://xx80.eu.org/proxy/https://raw.githubusercontent.com/redstarxxx/shell/2025/VPSKeeper2025.sh && chmod +x VPSKeeper2025.sh && bash VPSKeeper2025.sh @
