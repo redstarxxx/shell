@@ -45,10 +45,10 @@ if [ ! -d "/root/.shfile" ]; then
     mkdir -p "/root/.shfile"
 fi
 if [ ! -f "/root/.shfile/.common.sh" ]; then
-    curl -o /root/.shfile/.common.sh https://raw.githubusercontent.com/redstarxxx/shell/2025/common.sh && chmod +x common.sh
+    curl -o /root/.shfile/.common.sh https://raw.githubusercontent.com/redstarxxx/shell/2025/.common.sh && chmod +x .common.sh
     if [ ! -f "/root/.shfile/.common.sh" ]; then
         # 如果无法从 GitHub 获取文件，则尝试备用链接
-        curl -o /root/.shfile/.common.sh https://gh.xx80.eu.org/redstarxxx/shell/2025/common.sh && chmod +x common.sh
+        curl -o /root/.shfile/.common.sh https://xx80.eu.org/p/https://raw.githubusercontent.com/redstarxxx/shell/2025/.common.sh && chmod +x .common.sh
         if [ ! -f "/root/.shfile/.common.sh" ]; then
             echo -e "${Err} 无法下载 common.sh 函数库，请检查网络或手动下载。"
             exit 1
