@@ -12,11 +12,12 @@ mkdir -p /root/.tse/ && curl -o /root/.tse/tse.sh https://raw.githubusercontent.
 
 OC:
 
-curl -o oc2025.sh https://gh.xx80.eu.org/redstarxxx/shell/2025/oc2025.sh && chmod +x oc2025.sh && bash oc2025.sh @ 
+curl -o oc2025.sh https://gh.xx80.eu.org/redstarxxx/shell/2025/oc2025.sh && chmod +x oc2025.sh && bash oc2025.sh @
 
 VPSKeeper:
 
 bash -c "$(curl -L https://raw.githubusercontent.com/redstarxxx/shell/main/VPSKeeper.sh)" (参数过多，已经不支持)
 
-curl -o VPSKeeper2025.sh https://raw.githubusercontent.com/redstarxxx/shell/main/VPSKeeper.sh && chmod +x VPSKeeper2025.sh && bash VPSKeeper2025.sh @ 
-curl -o VPSKeeper2025.sh https://xx80.eu.org/proxy/https://raw.githubusercontent.com/redstarxxx/shell/main/VPSKeeper.sh && chmod +x VPSKeeper2025.sh && bash VPSKeeper2025.sh @ 
+curl -o VPSKeeper2025.sh https://raw.githubusercontent.com/redstarxxx/shell/main/VPSKeeper.sh && chmod +x VPSKeeper2025.sh && bash VPSKeeper2025.sh @
+
+curl -o VPSKeeper2025.sh https://xx80.eu.org/proxy/https://raw.githubusercontent.com/redstarxxx/shell/main/VPSKeeper.sh && chmod +x VPSKeeper2025.sh && bash VPSKeeper2025.sh @
