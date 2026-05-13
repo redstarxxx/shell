@@ -1,6 +1,9 @@
 #!/bin/bash
+# 交互式脚本不适合 set -e，但 pipefail 可以帮助检测管道错误
+set -o pipefail 2>/dev/null || true
 
 export LANG="en_US.UTF-8"
+etag=0
 BK='\033[0;30m'
 RE='\033[0;31m'
 GR='\033[0;32m'
@@ -45,11 +48,12 @@ remind3p() {
 waitfor() {
     echo -e "执行完成, ${NC}按${MA}任意键${NC}继续..."
     read -n 1 -s -r -p ""
+    echo
 }
 virt_check() {
-    cname=$(awk -F: '/model name/ {name=$2} END {print name}' /proc/cpuinfo | sed 's/^[ \t]*//;s/[ \t]*$//')
-    virtualx=$(dmesg 2>/dev/null)
-    if [ $(which dmidecode) ]; then
+    cname=$(awk -F: '/model name/ {name=$2} END {print name}' /proc/cpuinfo 2>/dev/null | sed 's/^[ \t]*//;s/[ \t]*$//')
+    virtualx=$(dmesg 2>/dev/null || true)
+    if command -v dmidecode &>/dev/null; then
         sys_manu=$(dmidecode -s system-manufacturer 2>/dev/null)
         sys_product=$(dmidecode -s system-product-name 2>/dev/null)
         sys_ver=$(dmidecode -s system-version 2>/dev/null)
@@ -58,9 +62,9 @@ virt_check() {
         sys_product=""
         sys_ver=""
     fi
-    if grep docker /proc/1/cgroup -qa; then
+    if grep docker /proc/1/cgroup -qa 2>/dev/null; then
         virtual="Docker"
-    elif grep lxc /proc/1/cgroup -qa || grep -qa container=lxc /proc/1/environ; then
+    elif grep lxc /proc/1/cgroup -qa 2>/dev/null || grep -qa container=lxc /proc/1/environ 2>/dev/null; then
         virtual="Lxc"
     elif [ -f /proc/user_beancounters ]; then
         virtual="OpenVZ"
@@ -84,20 +88,106 @@ virt_check() {
         virtual="Dedicated"
     fi
 }
+# 防火墙备份文件使用绝对路径，避免相对路径导致的位置不确定问题
+_FIREWALL_BACKUP="/tmp/redx_firewall_rules_backup"
 stopfire() {
     sudo service iptables stop > /dev/null 2>&1
     sudo systemctl stop firewalld > /dev/null 2>&1
-    iptables-save > firewall_rules_backup
+    if command -v iptables-save &>/dev/null; then
+        iptables-save > "$_FIREWALL_BACKUP" 2>/dev/null
+    fi
     iptables -F > /dev/null 2>&1
     ufw disable > /dev/null 2>&1
-    # echo "尝试暂停防火墙, 请在操作后重新启动以恢复防火墙功能."
 }
-recoverfire(){
+recoverfire() {
+    if [ -f "$_FIREWALL_BACKUP" ]; then
+        iptables-restore < "$_FIREWALL_BACKUP" 2>/dev/null
+        rm -f "$_FIREWALL_BACKUP"
+    fi
     sudo service iptables start > /dev/null 2>&1
     sudo systemctl start firewalld > /dev/null 2>&1
-    iptables-restore < firewall_rules_backup
-    rm -f firewall_rules_backup
     ufw enable > /dev/null 2>&1
+}
+# 安全的 jq 写入函数，替代 temp.json 方式
+jq_write() {
+    local target_file="${@: -1}"
+    local tmpfile
+    tmpfile=$(mktemp /tmp/redx_jq_XXXXXXXX.json)
+    # 将除最后一个参数外的所有参数传递给 jq
+    if jq "${@:1:$#-1}" > "$tmpfile" 2>/dev/null; then
+        mv "$tmpfile" "$target_file"
+    else
+        rm -f "$tmpfile"
+        echo -e "${RE}JSON 操作失败${NC}"
+        return 1
+    fi
+}
+# 证书申请结果检查（统一处理，消除重复代码）
+check_cert_result() {
+    local domain="$1"
+    local cert_dir="$2"
+    local key_ext="${3:-.key}"
+    local cert_ext="${4:-.cer}"
+    local acme_dir="${5:-}"
+    if [[ -f "${cert_dir}/${domain}${key_ext}" && -f "${cert_dir}/${domain}${cert_ext}" ]]; then
+        if [[ -s "${cert_dir}/${domain}${key_ext}" && -s "${cert_dir}/${domain}${cert_ext}" ]]; then
+            echo -e "${GR}证书申请成功！${NC}"
+            echo "证书已生成并保存到 ${cert_dir} 目录下."
+            return 0
+        else
+            rm -f "${cert_dir}/${domain}${key_ext}" 2>/dev/null
+            rm -f "${cert_dir}/${domain}${cert_ext}" 2>/dev/null
+            if [[ -n "$acme_dir" ]]; then
+                rm -rf "${acme_dir}/${domain}_ecc" 2>/dev/null
+            fi
+            echo -e "${RE}申请失败${NC}：存在文件但文件大小为0，已删除空文件。"
+            return 1
+        fi
+    else
+        echo -e "${RE}申请失败${NC}：缺少证书文件。"
+        return 1
+    fi
+}
+# 域名格式验证
+validate_domain() {
+    local domain="$1"
+    [[ "$domain" == *.* ]]
+}
+# IP 地址选择交互函数
+select_ip_address() {
+    local ipv4_addrs ipv6_addrs all_addrs
+    ipv4_addrs=($(ip -4 addr show 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}' | grep -v '^127\.' || ifconfig 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}' | grep -v '^127\.'))
+    ipv6_addrs=($(ip -6 addr show 2>/dev/null | grep -oE 'inet6 [0-9a-f:]+' | awk '{print $2}' | grep -vE '^::1$|^fe80' || ifconfig 2>/dev/null | grep -oE 'inet6 [0-9a-f:]+' | awk '{print $2}' | grep -vE '^::1$|^fe80'))
+    all_addrs=("${ipv4_addrs[@]}" "${ipv6_addrs[@]}")
+    if [[ ${#all_addrs[@]} -eq 0 ]]; then
+        echo -e "${RE}未检测到可用 IP 地址${NC}"
+        IP_address=""
+        return 1
+    fi
+    echo -e "${colored_text1}${NC}"
+    echo "请选择一个 IP 地址："
+    for ((i=0; i<${#all_addrs[@]}; i++)); do
+        echo "[$(($i+1))]     ${all_addrs[$i]}"
+    done
+    remind1p
+    read -e -p "输入序号以选择链接所使用的 IP 地址: " selected_index
+    local adjusted_index=$(($selected_index - 1))
+    if [[ "$adjusted_index" -ge 0 && "$adjusted_index" -lt "${#all_addrs[@]}" ]] 2>/dev/null; then
+        IP_address="${all_addrs[$adjusted_index]}"
+    else
+        echo -e "${YE}无效的选择，将使用第一个 IP 地址。${NC}"
+        IP_address="${all_addrs[0]}"
+    fi
+}
+# 生成随机密码
+generate_password() {
+    local length="${1:-16}"
+    local chars="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    local password=""
+    for ((i=0; i<length; i++)); do
+        password+="${chars:$((RANDOM % ${#chars})):1}"
+    done
+    echo "$password"
 }
 get_random_color() {
     colors=($BL $RE $GR $YE $MA $CY $WH)
@@ -137,7 +227,7 @@ if ! command -v curl &>/dev/null || ! command -v wget &>/dev/null || ! command -
         $pm install -y curl wget nano net-tools lsof
     fi
 fi
-(EUID=$(id -u)) 2>/dev/null
+EUID=$(id -u)
 virt_check
 onlyone=1
 while true; do
@@ -148,7 +238,7 @@ else
     user_path="/home/$(whoami)"
     echo -e "${GR}当前用户为非root用户, 部分操作可能无法顺利进行.${NC}"
 fi
-echo -e "${RE}RedX 一键脚本工具 v1.0${NC}"
+echo -e "${RE}RedX 一键脚本工具 v2.0${NC}"
 if [ "$virtual" != "" ]; then
     echo -e "VPS虚拟化类型: ${GR}$virtual${NC}"
 fi
@@ -819,8 +909,7 @@ case $choice in
                         echo -e "${colored_text1}${NC}"
                         while true; do
                         remind1p
-                        echo "1.srtp 2.utp 3.wechat-video 4.dtls 5.wireguard"
-                        echo "2. chacha20-poly1305"
+                        echo "1.srtp  2.utp  3.wechat-video  4.dtls  5.wireguard"
                         read -e -p "请选择伪装模式: " choice
                         case $choice in
                             1|11)
@@ -937,8 +1026,10 @@ case $choice in
                             break
                             ;;
                         esac
-                        en_reality_privateKey=$(echo "$(xray x25519)" | sed -n 's/Private key: \(.*\)/\1/p')
-                        en_reality_publicKey=$(echo "$(xray x25519)" | sed -n 's/Public key: \(.*\)/\1/p')
+                        # 一次生成密钥对，确保 privateKey 与 publicKey 匹配
+                        _x25519_output=$(xray x25519)
+                        en_reality_privateKey=$(echo "$_x25519_output" | sed -n 's/Private key: \(.*\)/\1/p')
+                        en_reality_publicKey=$(echo "$_x25519_output" | sed -n 's/Public key: \(.*\)/\1/p')
                         en_reality_shortIds=$short_id
 
                         ############## 自行输入设置
@@ -1013,8 +1104,9 @@ case $choice in
                         read -e -p "请输入IP (回车默认: 127.0.0.1): " ip
                         if [[ $ip == "" ]]; then
                             en_socks_udp_ip="127.0.0.1"
+                        else
+                            en_socks_udp_ip="$ip"
                         fi
-                        en_socks_udp_ip="$ip"
                     else
                         en_socks_udp="false"
                     fi
@@ -1164,15 +1256,7 @@ case $choice in
                     # i_ws_path=".streamSettings.wsSettings.path"
                     # i_ws_host=".streamSettings.wsSettings.headers.Host"
                     #############################################
-                    jq ".inbounds += [$new_inbound]" "$jsonfile" > temp.json && mv temp.json "$jsonfile"
-
-                    write_json_if() {
-                        address="$1"
-                        label="$2"
-                        if [[ $label != "" ]]; then
-                            jq --arg label "$label" '$address = $label' "$jsonfile" > temp.json && mv temp.json "$jsonfile"
-                        fi
-                    }
+                    jq_write ".inbounds += [$new_inbound]" "$jsonfile" "$jsonfile"
 
                     jq --argjson en_port "$en_port" \
                     --arg en_protocol "$en_protocol" \
@@ -1181,22 +1265,22 @@ case $choice in
                     .inbounds[-1].protocol = $en_protocol |
                     .inbounds[-1].tag = "inbound-\($en_port)" |
                     .inbounds[-1].streamSettings.network = $en_network' \
-                    "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                    "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
 
                     if [[ $en_protocol == "vmess" ]] || [[ $en_protocol == "vless" ]]; then
                         uuid=$(xray uuid)
                         jq --arg uuid "$uuid" \
                         '.inbounds[-1].settings.clients[0].id = $uuid' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     fi
                     if [[ $en_protocol == "vmess" ]]; then
                         jq '.inbounds[-1].settings.disableInsecureEncryption = false' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     fi
                     if [[ $en_protocol == "trojan" ]]; then
                         jq --arg en_trojan_password "$en_trojan_password" \
                         '.inbounds[-1].settings.clients[0].password = $en_trojan_password' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     fi
 
                     if [[ $en_protocol == "shadowsocks" ]]; then
@@ -1204,7 +1288,7 @@ case $choice in
                         --arg en_shadowsocks_password "$en_shadowsocks_password" \
                         '.inbounds[-1].settings.method = $en_shadowsocks_method |
                         .inbounds[-1].settings.password = $en_shadowsocks_password' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     fi
                     if [[ $en_protocol == "dokodemo-door" ]]; then
                         jq --arg en_dokodemo_door_url "$en_dokodemo_door_url" \
@@ -1215,7 +1299,7 @@ case $choice in
                         .inbounds[-1].settings.address = $en_dokodemo_door_url |
                         .inbounds[-1].settings.port = $en_dokodemo_door_port |
                         .inbounds[-1].settings.network = $en_dokodemo_door_network' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     fi
                     if [[ $en_protocol == "socks" ]]; then
                         jq --arg en_socks_user "$en_socks_user" \
@@ -1225,13 +1309,13 @@ case $choice in
                         .inbounds[-1].settings.auth = "password" |
                         .inbounds[-1].settings.accounts[0].user = $en_socks_user |
                         .inbounds[-1].settings.accounts[0].pass = $en_socks_password' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                         if [[ "$en_socks_udp" == "true" ]]; then
                             jq --argjson en_socks_udp true \
                             --arg en_socks_udp_ip "$en_socks_udp_ip" \
                             '.inbounds[-1].settings.udp = $en_socks_udp |
                             .inbounds[-1].settings.ip = $en_socks_udp_ip' \
-                            "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                            "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                         fi
                     fi
                     if [[ $en_protocol == "http" ]]; then
@@ -1241,12 +1325,12 @@ case $choice in
                         del(.inbounds[-1].streamSettings.realitySettings) |
                         .inbounds[-1].settings.accounts[0].user = $en_http_user |
                         .inbounds[-1].settings.accounts[0].pass = $en_http_password' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     fi
                     if [[ $en_network == "grpc" ]]; then
                         jq --arg en_grpc_serviceName "$en_grpc_serviceName" \
                         '.inbounds[-1].streamSettings.grpcSettings.serviceName = $en_grpc_serviceName' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     fi
                     if [[ $en_network == "ws" ]]; then
                         jq --arg en_ws_path "$en_ws_path" \
@@ -1255,23 +1339,23 @@ case $choice in
                         .inbounds[-1].streamSettings.wsSettings.path = $en_ws_path |
                         .inbounds[-1].streamSettings.wsSettings.headers.Host = $en_ws_host |
                         .inbounds[-1].streamSettings.wsSettings.acceptProxyProtocol = false' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     fi
                     ##############默认文件已经添加，这里留着备用
                     # if [[ $en_network == "tcp" ]]; then
                     #     jq '.inbounds[-1].streamSettings.tlsSettings.acceptProxyProtocol = false' \
-                    #     "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                    #     "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     # fi
                     ##########################
                     if [[ $en_flow != "" ]]; then
                         jq --arg en_flow "$en_flow" \
                         '.inbounds[-1].settings.clients[0].flow = $en_flow' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     fi
                     if [[ $en_security != "" ]]; then
                         jq --arg en_security "$en_security" \
                         '.inbounds[-1].streamSettings.security = $en_security' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     fi
                     if [[ $en_security == "tls" ]]; then
 
@@ -1303,7 +1387,7 @@ case $choice in
                         .inbounds[-1].streamSettings.tlsSettings.serverName = $en_tls_serverName |
                         .inbounds[-1].streamSettings.tlsSettings.certificates[0].certificateFile = $new_en_tls_certificateFile |
                         .inbounds[-1].streamSettings.tlsSettings.certificates[0].keyFile = $new_en_tls_keyFile' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     fi
                     if [[ $en_security == "reality" ]]; then
                         jq --arg en_reality_dest "$en_reality_dest" \
@@ -1319,7 +1403,7 @@ case $choice in
                         .inbounds[-1].streamSettings.realitySettings.privateKey = $en_reality_privateKey |
                         .inbounds[-1].streamSettings.realitySettings.publicKey = $en_reality_publicKey |
                         .inbounds[-1].streamSettings.realitySettings.shortIds[0] = $en_reality_shortIds' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     fi
                     if [[ $en_security == "http" ]]; then
                         http_header='{
@@ -1344,14 +1428,14 @@ case $choice in
                                 }
                             }
                         }'
-                        jq ".inbounds[-1].streamSettings.tcpSettings += {$http_header}" "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        jq ".inbounds[-1].streamSettings.tcpSettings += {$http_header}" "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                         jq --arg en_security_http_path "$en_security_http_path" \
                         --arg en_security_http_host "$en_security_http_host" \
                         'del(.inbounds[-1].streamSettings.realitySettings) |
                         del(.inbounds[-1].streamSettings.tlsSettings) |
                         .inbounds[-1].streamSettings.tlsSettings.header.request.path[0] = $en_security_http_path |
                         .inbounds[-1].streamSettings.tlsSettings.header.request.headers.Host[0] = $en_security_http_host' \
-                        "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                        "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     fi
 
                     # cat $jsonfile 
@@ -1391,37 +1475,8 @@ case $choice in
                     rd_security_http_path=$(jq -r '.inbounds[-1].streamSettings.tlsSettings.header.request.path[0]' "$jsonfile")
                     rd_security_http_host=$(jq -r '.inbounds[-1].streamSettings.tlsSettings.header.request.headers.Host[0]' "$jsonfile")
 
-                    #################由于需要联网速度太慢暂时只使用IPv4
-                    # IPv4_address=$(curl -4 ip.sb 2> /dev/null) > /dev/null
-                    # IPv6_address=$(curl -6 ip.sb 2> /dev/null) > /dev/null
-                    # ifconfig_output=$(ifconfig)
-                    # if [[ $ifconfig_output =~ $IPv4_address ]]; then
-                    #     IP_address=$IPv4_address
-                    # elif [[ $ifconfig_output =~ $IPv6_address ]]; then
-                    #     IP_address=$IPv6_address
-                    # else
-                    # IP_address=$IPv4_address
-                    # fi
-                    ############################################
-                    ipv4_addresses=($(ifconfig | grep -oP 'inet \K[\d.]+' | grep -v '^127\.'))
-                    ipv6_addresses=($(ifconfig | grep -oP 'inet6 \K[\da-f:]+' | grep -vE '^:|^(fe80)'))
-
-                    all46_addresses=("${ipv4_addresses[@]}" "${ipv6_addresses[@]}")
-                    echo -e "${colored_text1}${NC}"
-                    echo "请选择一个 IP 地址："
-                    for ((i=0; i<${#all46_addresses[@]}; i++)); do
-                        echo "[$(($i+1))]     ${all46_addresses[$i]}"
-                    done
-                    remind1p
-                    read -p "输入序号以选择链接所使用的 IP 地址: " selected_index
-                    adjusted_index=$(($selected_index - 1))
-                    if [ "$adjusted_index" -ge 0 ] && [ "$adjusted_index" -lt "${#all46_addresses[@]}" ]; then
-                        IP_address=${all46_addresses[$adjusted_index]}
-                    else
-                        echo "无效的选择。"
-                        IP_address=""
-                    fi
-                    ############################################
+                    # 选择 IP 地址
+                    select_ip_address
 
                     # cat $jsonfile | jq '.inbounds as $in | .outbounds | select(. != null) as $out | $in, $out' ########## 方便调试时关闭
                     # cat $jsonfile 
@@ -1527,35 +1582,8 @@ case $choice in
                 mapfile -t rd_client_id < <(jq -r '.inbounds[].settings.clients[0].id' "$jsonfile")
                 mapfile -t rd_client_flow < <(jq -r '.inbounds[].settings.clients[0].flow' "$jsonfile")
 
-                #################由于需要联网速度太慢暂时只使用IPv4
-                # IPv4_address=$(curl -4 ip.sb 2> /dev/null) > /dev/null
-                # IPv6_address=$(curl -6 ip.sb 2> /dev/null) > /dev/null
-                # ifconfig_output=$(ifconfig)
-                # if [[ $ifconfig_output =~ $IPv4_address ]]; then
-                #     IP_address=$IPv4_address
-                # elif [[ $ifconfig_output =~ $IPv6_address ]]; then
-                #     IP_address=$IPv6_address
-                # else
-                # IP_address=$IPv4_address
-                # fi
-                ############################################
-                ipv4_addresses=($(ifconfig | grep -oP 'inet \K[\d.]+' | grep -v '^127\.'))
-                ipv6_addresses=($(ifconfig | grep -oP 'inet6 \K[\da-f:]+' | grep -vE '^:|^(fe80)'))
-                all46_addresses=("${ipv4_addresses[@]}" "${ipv6_addresses[@]}")
-                echo -e "${colored_text1}${NC}"
-                echo "请选择一个 IP 地址："
-                for ((i=0; i<${#all46_addresses[@]}; i++)); do
-                    echo "[$(($i+1))]     ${all46_addresses[$i]}"
-                done
-                remind1p
-                read -p "输入序号以选择链接所使用的 IP 地址: " selected_index
-                adjusted_index=$(($selected_index - 1))
-                if [ "$adjusted_index" -ge 0 ] && [ "$adjusted_index" -lt "${#all46_addresses[@]}" ]; then
-                    IP_address=${all46_addresses[$adjusted_index]}
-                else
-                    echo "无效的选择。"
-                    IP_address=""
-                fi
+                # 选择 IP 地址
+                select_ip_address
                 ############################################
 
                 clear_screen
@@ -1598,7 +1626,7 @@ case $choice in
                     check_and_echo "${GR}HTTP用户名${NC}:" "${rd_http_user[i]}"
                     check_and_echo "${GR}HTTP密码${NC}:" "${rd_http_password[i]}"
                     if [[ ${rd_protocol[i]} == "vmess" || ${rd_protocol[i]} == "vless" || ${rd_protocol[i]} == "trojan" || ${rd_protocol[i]} == "shadowsocks" ]]; then
-                    if [[ $en_network == "ws" ]]; then
+                    if [[ "${rd_network[i]}" == "ws" ]]; then
                         URL="${rd_protocol[i]}://${rd_client_id[i]}@$IP_address:${rd_port[i]}?security=${rd_security[i]}&encryption=none&type=${rd_network[i]}&path=${rd_ws_path[i]}#${rd_protocol[i]}"
                     else
                         URL="${rd_protocol[i]}://${rd_client_id[i]}@$IP_address:${rd_port[i]}?security=${rd_security[i]}&encryption=none&type=${rd_network[i]}#${rd_protocol[i]}"
@@ -1654,7 +1682,7 @@ case $choice in
                 read -e -p "请输入要删除的节点序号: " choice
                 if [[ $choice != "" ]]; then
                     length=$(jq '.inbounds | length' "$jsonfile")
-                    jq "del(.inbounds[$choice-1])" "$jsonfile" > temp.json && mv temp.json "$jsonfile"
+                    jq "del(.inbounds[$choice-1])" "$jsonfile" > "${jsonfile}.tmp" && mv "${jsonfile}.tmp" "$jsonfile"
                     new_length=$(jq '.inbounds | length' "$jsonfile")
                     if [[ $new_length -eq $((length - 1)) ]]; then
                         echo "节点已删除成功."
@@ -1868,8 +1896,8 @@ case $choice in
                                         echo "证书已生成并保存到 $user_path/cert 目录下."
                                         break
                                     else
-                                        rm $user_path/cert/$domain.key &>/dev/null
-                                        rm $user_path/cert/$domain.cer &>/dev/null
+                                        rm -f "$user_path/cert/$domain.key" 2>/dev/null
+                                        rm -f "$user_path/cert/$domain.cer" 2>/dev/null
                                         rm -rf $user_path/.acme.sh/${domain}_ecc &>/dev/null
                                         echo "申请失败：存在文件但文件大小为0，已删除空文件。"
                                         break
@@ -2002,13 +2030,13 @@ case $choice in
                                         if [[ -s "$user_path/cert/$domain.key" && -s "$user_path/cert/$domain.cer" ]]; then
                                             echo "证书申请成功！"
                                             echo "==========================================================="
-                                            ls -l /root/cert
+                                            ls -l "$user_path/cert"
                                             echo "==========================================================="
                                             echo "证书已生成并保存到 $user_path/cert 目录下."
                                         else
-                                            rm $user_path/cert/$domain.key &>/dev/null
-                                            rm $user_path/cert/$domain.cer &>/dev/null
-                                            rm -rf $user_path/.acme.sh/${domain}_ecc &>/dev/null
+                                            rm -f "$user_path/cert/$domain.key" 2>/dev/null
+                                            rm -f "$user_path/cert/$domain.cer" 2>/dev/null
+                                            rm -rf "$user_path/.acme.sh/${domain}_ecc" 2>/dev/null
                                             echo "申请失败：存在文件但文件大小为0，已删除空文件。"
                                         fi
                                     else
@@ -2049,6 +2077,12 @@ case $choice in
                                 echo "输入的域名不合法, 请重新输入."
                             fi
                         done
+                        # 恢复原始 Nginx 配置文件
+                        if [[ -f "/etc/nginx/nginx.redx" ]]; then
+                            cp /etc/nginx/nginx.redx /etc/nginx/nginx.conf
+                        fi
+                        # 清理临时 SSL 配置文件
+                        rm -f /etc/nginx/nginx_ssl.conf 2>/dev/null
                         systemctl stop nginx.service > /dev/null 2>&1
                         pkill nginx > /dev/null 2>&1
                         systemctl restart nginx > /dev/null 2>&1
@@ -2093,38 +2127,14 @@ case $choice in
                             $user_path/.acme.sh/acme.sh --issue -d "$domain1" -d "$domain2" -w "$webroot"
                             $user_path/.acme.sh/acme.sh --installcert -d $domain1 --key-file $user_path/cert/$domain1.key --fullchain-file $user_path/cert/$domain1.cer
 
-                            if [[ -f "$user_path/cert/$domain1.key" && -f "$user_path/cert/$domain1.cer" ]]; then
-                                if [[ -s "$user_path/cert/$domain1.key" && -s "$user_path/cert/$domain1.cer" ]]; then
-                                    echo "证书申请成功！"
-                                    echo "证书已生成并保存到 $user_path/cert 目录下."
-                                else
-                                    rm $user_path/cert/$domain1.key &>/dev/null
-                                    rm $user_path/cert/$domain1.cer &>/dev/null
-                                    rm -rf $user_path/.acme.sh/${domain1}_ecc &>/dev/null
-                                    echo "申请失败：存在文件但文件大小为0，已删除空文件。"
-                                fi
-                            else
-                                echo "申请失败：缺少证书文件。"
-                            fi
+                            check_cert_result "$domain1" "$user_path/cert" ".key" ".cer" "$user_path/.acme.sh"
 
                         else
                             $user_path/.acme.sh/acme.sh --register-account -m $random@gmail.com
                             $user_path/.acme.sh/acme.sh --issue -d "$domain1" -w "$webroot"
                             $user_path/.acme.sh/acme.sh --installcert -d $domain1 --key-file $user_path/cert/$domain1.key --fullchain-file $user_path/cert/$domain1.cer
 
-                            if [[ -f "$user_path/cert/$domain1.key" && -f "$user_path/cert/$domain1.cer" ]]; then
-                                if [[ -s "$user_path/cert/$domain1.key" && -s "$user_path/cert/$domain1.cer" ]]; then
-                                    echo "证书申请成功！"
-                                    echo "证书已生成并保存到 $user_path/cert 目录下."
-                                else
-                                    rm $user_path/cert/$domain1.key &>/dev/null
-                                    rm $user_path/cert/$domain1.cer &>/dev/null
-                                    rm -rf $user_path/.acme.sh/${domain1}_ecc &>/dev/null
-                                    echo "申请失败：存在文件但文件大小为0，已删除空文件。"
-                                fi
-                            else
-                                echo "申请失败：缺少证书文件。"
-                            fi
+                            check_cert_result "$domain1" "$user_path/cert" ".key" ".cer" "$user_path/.acme.sh"
                         fi
                         recoverfire
                         fi
@@ -2151,22 +2161,9 @@ case $choice in
                                 --key-file       $user_path/cert/"$domain.key"  \
                                 --fullchain-file $user_path/cert/"$domain.pem"
                                 recoverfire
-                                if [[ -f "$user_path/cert/$domain.key" && -f "$user_path/cert/$domain.cer" ]]; then
-                                    if [[ -s "$user_path/cert/$domain.key" && -s "$user_path/cert/$domain.cer" ]]; then
-                                        echo "证书申请成功！"
-                                        echo "证书已生成并保存到 $user_path/cert 目录下."
-                                        break
-                                    else
-                                        rm $user_path/cert/$domain.key &>/dev/null
-                                        rm $user_path/cert/$domain.cer &>/dev/null
-                                        rm -rf $user_path/.acme.sh/${domain}_ecc &>/dev/null
-                                        echo "申请失败：存在文件但文件大小为0，已删除空文件。"
-                                        break
-                                    fi
-                                else
-                                    echo "申请失败：缺少证书文件。"
-                                    break
-                                fi
+                                # 注意: Cloudflare 方式 --fullchain-file 生成的是 .pem 文件
+                                check_cert_result "$domain" "$user_path/cert" ".key" ".pem" "$user_path/.acme.sh"
+                                break
 
                             else
                                 if [[ $domain == "" ]]; then
@@ -2198,7 +2195,7 @@ case $choice in
                         echo "==========================================================="
                         cat /etc/nginx/nginx.conf
                         echo "==========================================================="
-                        ls -l /root/cert
+                        ls -l "$user_path/cert"
                         echo "==========================================================="
                         waitfor
                         ;;
@@ -2257,16 +2254,17 @@ case $choice in
                 read -e -p "请输入你的选择: " -n 2 -r choice && echoo
                 case $choice in
                     1|11)
-                        read -e -p "请输请输入要更新的证书的域名: " domain
+                        read -e -p "请输入要更新的证书的域名: " domain
                         if [[ $domain != "" ]]; then
-                            $user_path/.acme.sh/acme.sh --renew -d $domain
+                            $user_path/.acme.sh/acme.sh --renew -d "$domain"
                             if [[ $? -eq 0 ]]; then
                                 echo "证书更新成功."
                             else
                                 echo -e "证书更新${MA}失败${NC}."
                             fi
+                        else
+                            echo "操作取消."
                         fi
-                        echo "操作取消."
                         waitfor
                         ;;
                     2|22)
@@ -2372,7 +2370,7 @@ case $choice in
                 read -e -p "请输入你的选择: " -n 2 -r choice && echoo
                 case $choice in
                     1|11)
-                        read -e -p "请输请输入要删除的证书的域名: " domain
+                        read -e -p "请输入要删除的证书的域名: " domain
                         if [[ $domain != "" ]]; then
                             $user_path/.acme.sh/acme.sh --remove -d $domain
                             if [[ $? -eq 0 ]]; then
@@ -2430,17 +2428,24 @@ case $choice in
         onlyone=0
         ;;
     3|33)
-        wget --no-check-certificate -O tcpx.sh https://raw.githubusercontent.com/ylx2016/Linux-NetSpeed/master/tcpx.sh
-        chmod +x tcpx.sh
-        bash tcpx.sh
-        rm -f tcpx.sh
+        if wget --no-check-certificate -O tcpx.sh https://raw.githubusercontent.com/ylx2016/Linux-NetSpeed/master/tcpx.sh 2>/dev/null; then
+            chmod +x tcpx.sh
+            bash tcpx.sh
+            rm -f tcpx.sh
+        else
+            echo -e "${RE}BBR 脚本下载失败, 请检查网络连接.${NC}"
+        fi
         onlyone=0
         waitfor
         ;;
     4|44)
-        wget -N https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh
-        bash menu.sh [option] [lisence/url/token]
-        rm -f menu.sh
+        if wget -N https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh 2>/dev/null; then
+            chmod +x menu.sh
+            bash menu.sh
+            rm -f menu.sh
+        else
+            echo -e "${RE}WARP 脚本下载失败, 请检查网络连接.${NC}"
+        fi
         onlyone=0
         waitfor
         ;;
@@ -2591,7 +2596,7 @@ case $choice in
                                 sysctl -p
                             fi
                             mkdir -p /etc/wireguard
-                            chmod 0777 /etc/wireguard
+                            chmod 0700 /etc/wireguard
                             umask 077   #调整目录默认权限
                             cd /etc/wireguard/
                             rm *.key &>/dev/null
@@ -2649,7 +2654,7 @@ case $choice in
                     esac
                     loop=1
                 done
-                echo "break 1"
+
                 ;;
             2|22)
                 if [[ $wgtag == *"*"* ]]; then
@@ -2995,10 +3000,18 @@ case $choice in
                 # rm -f /etc/systemd/system/wg-quick@$wgfname.service
                 # rm -f /usr/bin/wg
                 # rm -f /usr/bin/wg-quick
+                # 补全实际卸载命令
+                if command -v apt &>/dev/null; then
+                    apt remove -y wireguard wireguard-tools 2>/dev/null
+                elif command -v yum &>/dev/null; then
+                    yum remove -y wireguard-tools 2>/dev/null
+                fi
+                rm -rf /etc/wireguard/
                 if command -v wg &>/dev/null; then
                     echo -e "${MA}WIREGUARD 卸载失败${NC}！"
+                else
+                    echo -e "${GR}WIREGUARD 卸载成功${NC}！"
                 fi
-                echo -e "${GR}WIREGUARD 卸载成功${NC}！"
                 waitfor
                 ;;
             t)
